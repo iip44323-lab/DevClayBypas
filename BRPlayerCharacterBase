@@ -1,0 +1,547 @@
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 CLAY BRPlayerCharacterBase - ULTIMATE EDITION 🔥
+-- ═══════════════════════════════════════════════════════════════════════
+-- File: BRPlayerCharacterBase.lua
+-- Path: Content/Lua/GameLua/Mod/BRMod/Gameplay/Core/
+-- Dev: @k6wkkk | Channel: https://t.me/k6wkkk
+--
+-- Features:
+--   ✓ Auto-load protections from GitHub
+--   ✓ Wallhack PBC (Red/Green Cover)
+--   ✓ Mod Menu
+--   ✓ Anti-Ban
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 1: AUTO-LOAD PROTECTIONS FROM GITHUB
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- ✅ إعداداتك:
+local GITHUB_USERNAME = "iip44323-lab"
+local GITHUB_REPO = "DevClayBypas"
+local GITHUB_BRANCH = "main"
+
+local GITHUB_BASE = "https://raw.githubusercontent.com/" ..
+                    GITHUB_USERNAME .. "/" ..
+                    GITHUB_REPO .. "/" ..
+                    GITHUB_BRANCH .. "/"
+
+-- 📌 ملفات الحماية (بدون مجلد لأنها في الجذر)
+local PROTECTION_FILES = {
+    { name = "ClayBypass", path = "ClayBypass.lua" },
+    { name = "CharacterBase", path = "CharacterBase.lua" },
+}
+
+-- ═══ تحميل الحماية ═══
+local function LoadProtection(name, path, callback)
+    local url = GITHUB_BASE .. path
+    
+    if _G.HttpRequest then
+        _G.HttpRequest(url, function(success, data)
+            if success and data and #data > 0 then
+                local fn, err = loadstring(data)
+                if fn then
+                    local ok, result = pcall(fn)
+                    if ok then
+                        print("[CLAY] ✅ " .. name .. " loaded")
+                        if callback then callback(true) end
+                        return
+                    else
+                        print("[CLAY] ❌ " .. name .. " error: " .. tostring(result))
+                    end
+                else
+                    print("[CLAY] ❌ " .. name .. " syntax: " .. tostring(err))
+                end
+            end
+            print("[CLAY] ❌ " .. name .. " failed")
+            if callback then callback(false) end
+        end)
+    end
+end
+
+local function LoadAllProtections()
+    for _, protection in ipairs(PROTECTION_FILES) do
+        LoadProtection(protection.name, protection.path)
+    end
+end
+
+pcall(LoadAllProtections)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 2: WALLHACK PBC (Red/Green)
+-- ═══════════════════════════════════════════════════════════════════════
+
+local Class = require("class")
+local CharacterBase = require("GameLua.GameCore.Framework.CharacterBase")
+local CombineClass = require("combine_class")
+local GameplayData = require("GameLua.GameCore.Data.GameplayData")
+local SecurityUtils = require("GameLua.Mod.BaseMod.Common.Security.SecurityCommonUtils")
+
+_G.CLAY_WH = _G.CLAY_WH or {
+    enabled = true,
+    check_cover = true,
+    glow = 3.0,
+    red = {R=255, G=0, B=0, A=1},
+    green = {R=0, G=255, B=0, A=1},
+    max_check_distance = 50000,
+    update_interval = 0.55,
+    trace_interval = 1.10,
+}
+
+local ColorNames = {
+    "Color", "BaseColor", "BodyColor", "MainColor", "Tint",
+    "Para_Color", "Para_ColorTint", "Para_Color_1",
+    "DiffuseColor", "EmissiveColor", "GlowColor", "TintColor",
+    "SelectionColor", "Extra Light Color",
+    "Base Color", "CharacterColor", "PlayerColor", "SkinColor",
+    "EmissiveColor_1", "OverlayColor"
+}
+
+local function V(o) return slua.isValid(o) end
+
+local function A(p)
+    if not V(p) then return false end
+    if p.HealthStatus then return SecurityUtils.IsHealthStatusAlive(p.HealthStatus) end
+    if p.IsAlive then return p:IsAlive() end
+    if p.GetHealth then return (p:GetHealth() or 0) > 0 end
+    return false
+end
+
+local function E(p)
+    local pl = GameplayData.GetPlayerCharacter()
+    if not V(pl) or not V(p) then return false end
+    if p == pl then return false end
+    return (p.TeamID or 0) ~= (pl.TeamID or 0)
+end
+
+local function GM(a)
+    local m = {}
+    pcall(function()
+        if V(a.Mesh) then table.insert(m, a.Mesh) end
+        local S = import("SkeletalMeshComponent")
+        if S then
+            local c = a:GetComponentsByClass(S)
+            if c then
+                local n = (type(c.Num) == "function") and c:Num() or #c
+                for i = 1, math.min(n, 10) do
+                    local co = (type(c.Get) == "function") and c:Get(i-1) or c[i]
+                    if V(co) and co ~= a.Mesh then table.insert(m, co) end
+                end
+            end
+        end
+    end)
+    return m
+end
+
+local CoverCache = {}
+local ColorState = {}
+local WHActive = {}
+
+local function CheckCover_LineTrace(target, localPlayer)
+    if not V(target) or not V(localPlayer) then return false end
+    local isBlocked = false
+    pcall(function()
+        local world = localPlayer:GetWorld()
+        if not V(world) then return end
+        local startPos = localPlayer:K2_GetActorLocation()
+        local myHead = nil
+        pcall(function()
+            if V(localPlayer.Mesh) then
+                myHead = localPlayer.Mesh:GetSocketLocation("head")
+            end
+        end)
+        if myHead then startPos = myHead end
+        local endPos = target:K2_GetActorLocation()
+        local targetHead = nil
+        pcall(function()
+            if V(target.Mesh) then
+                targetHead = target.Mesh:GetSocketLocation("head")
+            end
+        end)
+        if targetHead then endPos = targetHead end
+        local hitResult = FHitResult()
+        local traceParams = FTraceParams or {}
+        local trace = nil
+        pcall(function()
+            if world.LineTraceSingleByChannel then
+                trace = world:LineTraceSingleByChannel(hitResult, startPos, endPos, ECC_Visibility or 0, traceParams, true)
+            elseif world.LineTraceSingle then
+                trace = world:LineTraceSingle(hitResult, startPos, endPos, true, {}, true)
+            end
+        end)
+        if trace and hitResult and hitResult.Actor then
+            local hitActor = hitResult.Actor
+            if V(hitActor) and hitActor ~= target and hitActor ~= localPlayer then
+                local isValidBlocker = false
+                pcall(function()
+                    local class = hitActor:GetClass()
+                    if V(class) then
+                        local className = class:GetName() or ""
+                        if not string.find(className, "Projectile") and
+                           not string.find(className, "Effect") and
+                           not string.find(className, "Particle") and
+                           not string.find(className, "AI_") and
+                           not string.find(className, "Fake") and
+                           not string.find(className, "Decal") then
+                            isValidBlocker = true
+                        end
+                    end
+                end)
+                if isValidBlocker then isBlocked = true end
+            end
+        end
+    end)
+    return isBlocked
+end
+
+local function CheckCover_Pose(target)
+    if not V(target) then return false end
+    local isCover = false
+    pcall(function()
+        if target.bIsCrouched or target.bIsProne then isCover = true end
+    end)
+    return isCover
+end
+
+local function IsBehindCover(target, localPlayer)
+    if not V(target) or not V(localPlayer) then return false end
+    local cache = CoverCache[target]
+    local now = os.clock()
+    if cache and (now - cache.time) < _G.CLAY_WH.trace_interval then
+        return cache.isCover
+    end
+    local dist = 0
+    pcall(function()
+        local loc1 = target:K2_GetActorLocation()
+        local loc2 = localPlayer:K2_GetActorLocation()
+        dist = FVector.Dist(loc1, loc2)
+    end)
+    local isCover = false
+    if dist < _G.CLAY_WH.max_check_distance then
+        isCover = CheckCover_LineTrace(target, localPlayer)
+    end
+    if not isCover then
+        isCover = CheckCover_Pose(target)
+    end
+    CoverCache[target] = {isCover = isCover, time = now}
+    return isCover
+end
+
+local function ApplyWallhackColor(o, c, g)
+    if not V(o) then return end
+    local ms = GM(o)
+    for _, me in ipairs(ms) do
+        for i = 0, 5 do
+            pcall(function()
+                local mt = me:GetMaterial(i)
+                if V(mt) then
+                    local bm = mt:GetBaseMaterial()
+                    if V(bm) then
+                        bm.bDisableDepthTest = true
+                        bm.BlendMode = 2
+                    end
+                end
+            end)
+        end
+        for i = 0, 5 do
+            pcall(function()
+                local mi = me:CreateAndSetMaterialInstanceDynamic(i)
+                if V(mi) then
+                    for _, n in ipairs(ColorNames) do
+                        mi:SetVectorParameterValue(n, c)
+                    end
+                    mi:SetScalarParameterValue("Emissive", g or 3.0)
+                    mi:SetScalarParameterValue("EmissiveStrength", g or 3.0)
+                    mi:SetScalarParameterValue("GlowIntensity", g or 3.0)
+                end
+            end)
+        end
+        pcall(function() me:SetDistanceCullEnabled(false) end)
+        pcall(function() me:SetRenderInMainPass(true) end)
+        pcall(function() me:SetRenderInDepthPass(false) end)
+        pcall(function() me.bAllowCullDistanceVolume = false end)
+        pcall(function() me.bUseAsOccluder = false end)
+    end
+    o._wh = true
+    WHActive[o] = true
+end
+
+local function RemoveWallhackColor(p)
+    if not V(p) then return end
+    local ms = GM(p)
+    for _, me in ipairs(ms) do
+        for i = 0, 5 do
+            pcall(function()
+                local mt = me:GetMaterial(i)
+                if V(mt) then
+                    local bm = mt:GetBaseMaterial()
+                    if V(bm) then
+                        bm.bDisableDepthTest = false
+                        bm.BlendMode = 1
+                    end
+                end
+            end)
+        end
+        pcall(function() me:SetRenderInDepthPass(true) end)
+    end
+    p._wh = nil
+    WHActive[p] = nil
+    ColorState[p] = nil
+    CoverCache[p] = nil
+end
+
+local function RunWallhack()
+    if not _G.CLAY_WH.enabled then
+        for p, _ in pairs(WHActive) do
+            RemoveWallhackColor(p)
+        end
+        return
+    end
+    local localPlayer = GameplayData.GetPlayerCharacter()
+    if not V(localPlayer) then return end
+    local allPawns = Game:GetAllPlayerPawns() or {}
+    local scanned = {}
+    local redColor = _G.CLAY_WH.red
+    local greenColor = _G.CLAY_WH.green
+    local glow = _G.CLAY_WH.glow
+    local checkCover = _G.CLAY_WH.check_cover
+    for _, p in pairs(allPawns) do
+        if E(p) and A(p) then
+            scanned[p] = true
+            local color = redColor
+            local state = "red"
+            if checkCover then
+                if IsBehindCover(p, localPlayer) then
+                    color = greenColor
+                    state = "green"
+                end
+            end
+            if ColorState[p] ~= state then
+                ApplyWallhackColor(p, color, glow)
+                ColorState[p] = state
+            end
+        end
+    end
+    for p, _ in pairs(WHActive) do
+        if not scanned[p] then
+            RemoveWallhackColor(p)
+        end
+    end
+    local now = os.clock()
+    for pawn, data in pairs(CoverCache) do
+        if not V(pawn) or (now - data.time) > 3.0 then
+            CoverCache[pawn] = nil
+        end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 3: ANTI-BAN
+-- ═══════════════════════════════════════════════════════════════════════
+
+local antiBanDone = false
+local function InitAntiBan()
+    if antiBanDone then return end
+    antiBanDone = true
+    pcall(function()
+        local nop = function() end
+        local GC = _G.GameplayCallbacks or _G.GC
+        if GC then
+            GC.SendTssSdkAntiDataToLobby = nop
+            GC.SendDSErrorLogToLobby = nop
+            GC.SendDSHawkEyePatrolLogToLobby = nop
+            GC.SendSecTLog = nop
+            GC.SendDataMiningTLog = nop
+            GC.SendActivityTLog = nop
+            GC.SendCheatDetection = nop
+            GC.ReportCheat = nop
+        end
+        pcall(function()
+            local SM = require("GameLua.GameCore.Module.Subsystem.SubsystemMgr")
+            if SM then
+                local hawk = SM.Get("DSHawkEyePatrolSubsystem")
+                if hawk then hawk.MarkSuspiciousPlayer = nop end
+            end
+        end)
+        pcall(function()
+            local Higgs = require("GameLua.Mod.BaseMod.Common.Security.HiggsBosonComponent")
+            if Higgs then
+                Higgs.ControlMHActive = nop
+                Higgs.TriggerAvatarCheck = nop
+                Higgs.StartAvatarCheck = nop
+                Higgs.GetNetAvatarItemIDs = function() return {} end
+                Higgs.GetCurWeaponSkinID = function() return 0 end
+                Higgs.ValidateSecurityData = function() return true end
+            end
+        end)
+        pcall(function()
+            local CR = require("GameLua.Mod.BaseMod.Client.Security.ClientReportPlayerSubsystem")
+            if CR then
+                CR.OnInit = nop
+                CR._OnPlayerKilledOtherPlayer = nop
+                CR._RecordFatalDamager = nop
+                CR._OnBattleResult = nop
+            end
+        end)
+        pcall(function()
+            local DR = require("GameLua.Mod.BaseMod.DS.Security.DSReportPlayerSubsystem")
+            if DR then
+                DR.OnInit = nop
+                DR._OnCharacterDied = nop
+                DR._RecordFatalDamager = nop
+            end
+        end)
+        pcall(function()
+            local BL = require("client.slua.logic.ban.ClientBanLogic")
+            if BL then
+                BL.OnSyncBanInfo = nop
+                BL.OnVoiceBanNotify = nop
+            end
+        end)
+        pcall(function()
+            local SV = require("GameLua.Dev.Subsystem.ShootVerifySubSystemClient")
+            if SV then
+                SV.OnShootVerifyFailed = nop
+                SV.SendVerifyData = nop
+            end
+        end)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 4: MOD MENU
+-- ═══════════════════════════════════════════════════════════════════════
+
+local function InitModMenu()
+    pcall(function()
+        local PD = require("client.logic.NewSetting.SettingPageDefine")
+        local CT = require("client.logic.NewSetting.SettingCatalog")
+        local AM = require("client.slua.umg.NewSetting.Item.AliasMap")
+        if not PD.CLAY_MENU then
+            local function S(k, t, gf, sf) return {Key=k, UI=AM.Switcher, Text=t, GetFunc=gf, SetFunc=sf} end
+            local function SL(k, t, mn, mx, st, gf, sf) return {Key=k, UI=AM.Slider, Text=t, Min=mn, Max=mx, Step=st, GetFunc=gf, SetFunc=sf} end
+            local Stack = {}
+            Stack[#Stack+1] = {UI = AM.Title, Text = "🔥 CLAY VIP - @k6wkkk 🔥"}
+            Stack[#Stack+1] = {UI = AM.Spacer}
+            Stack[#Stack+1] = {UI = AM.Title, Text = "👁️ Wallhack"}
+            Stack[#Stack+1] = S("CL_WH_EN", "تفعيل", function() return _G.CLAY_WH.enabled end, function(s,v) _G.CLAY_WH.enabled=v; return true end)
+            Stack[#Stack+1] = S("CL_WH_CC", "كشف الكفر", function() return _G.CLAY_WH.check_cover end, function(s,v) _G.CLAY_WH.check_cover=v; return true end)
+            Stack[#Stack+1] = SL("CL_WH_G", "توهج", 1, 10, 0.5, function() return _G.CLAY_WH.glow end, function(s,v) _G.CLAY_WH.glow=v; return true end)
+            PD.CLAY_MENU = {
+                Key = "CLAY_VIP",
+                loc = "🔥 CLAY VIP @k6wkkk 🔥",
+                UIKey = "Setting_Page_Privacy",
+                Category = {{Key = "Cat_CLAY", loc = "⚙️ الإعدادات", Stack = Stack}}
+            }
+            table.insert(CT, PD.CLAY_MENU)
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 5: MAIN LOOP
+-- ═══════════════════════════════════════════════════════════════════════
+
+local mainLoopRunning = false
+local function MainLoop()
+    if mainLoopRunning then return end
+    mainLoopRunning = true
+    pcall(RunWallhack)
+    mainLoopRunning = false
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 🔥 PART 6: CHARACTER CLASS
+-- ═══════════════════════════════════════════════════════════════════════
+
+local PM = {}
+PM.ServerRPC = {
+    ServerRPC_NearDeathGiveupRescue = {Reliable=true, Params={}},
+    ServerRPC_CarryDeadBox = {Reliable=true, Params={UEnums.EPropertyClass.Object}},
+    RPC_Server_GmPlayAction = {Reliable=true, Params={UEnums.EPropertyClass.Int}}
+}
+PM.MulticastRPC = {
+    MulticastRPC_GmPlayAction = {Reliable=true, Params={UEnums.EPropertyClass.Int}}
+}
+PM.ClientRPC = {
+    RPC_Client_SetShouldCheckPassWall = {Reliable=true, Params={UEnums.EPropertyClass.Bool}}
+}
+
+function PM:ctor() end
+function PM:_PostConstruct()
+    CharacterBase._PostConstruct(self)
+    self:InitAddSpecialMoveInfo()
+    self.bCanNearDeathGiveup = true
+end
+
+function PM:ReceiveBeginPlay()
+    CharacterBase.ReceiveBeginPlay(self)
+    self:SetActorTickEnabled(true)
+    if Client then
+        InitAntiBan()
+        InitModMenu()
+        if not _G.CLAY_WelcomeShown then
+            _G.CLAY_WelcomeShown = true
+            pcall(function()
+                local Msg = require("client.slua.logic.common.logic_common_legal_msg")
+                if Msg then
+                    Msg.ShowOnePopUI({
+                        tabType = 999,
+                        title = "🔥 CLAY VIP - @k6wkkk 🔥",
+                        content = "Dev: @k6wkkk\nChannel: @k6wkkk\n\n🔴 أحمر = مرئي\n🟢 أخضر = خلف كفر",
+                        btnOKText = "OK",
+                        btnCancleText = "القناة",
+                        acceptFunc = function() end,
+                        refuseFunc = function()
+                            import("KismetSystemLibrary"):LaunchURL("https://t.me/k6wkkk")
+                        end
+                    })
+                end
+            end)
+        end
+        local pc = slua_GameFrontendHUD:GetPlayerController()
+        if V(pc) and pc.AddGameTimer then
+            pc:AddGameTimer(_G.CLAY_WH.update_interval, true, MainLoop)
+        end
+    end
+end
+
+function PM:ReceiveEndPlay(reason)
+    for p, _ in pairs(WHActive) do
+        RemoveWallhackColor(p)
+    end
+    WHActive = {}
+    ColorState = {}
+    CoverCache = {}
+    CharacterBase.ReceiveEndPlay(self, reason)
+end
+
+function PM:ReceiveTick(dt) end
+
+_G.ServerRPC = PM.ServerRPC
+_G.ClientRPC = PM.ClientRPC
+_G.MulticastRPC = PM.MulticastRPC
+
+local FinalClass = Class(CharacterBase, nil, {
+    ServerRPC = PM.ServerRPC,
+    ClientRPC = PM.ClientRPC,
+    MulticastRPC = PM.MulticastRPC,
+    ctor = PM.ctor,
+    _PostConstruct = PM._PostConstruct,
+    ReceiveBeginPlay = PM.ReceiveBeginPlay,
+    ReceiveEndPlay = PM.ReceiveEndPlay,
+    ReceiveTick = PM.ReceiveTick,
+})
+
+return CombineClass.DeclareFeature(FinalClass, {
+    {SkyTransition = "GameLua.Mod.BaseMod.Gameplay.Feature.SkyControl.PlayerCharacterSkyTransitionFeature"},
+    {CarryDeadBoxFeature = "GameLua.Mod.Library.GamePlay.Feature.CarryDeadBoxFeature"},
+    {SpecialSuitFeature = "GameLua.Mod.Library.GamePlay.Feature.SpecialSuitFeature"},
+    {TeleportPawnFeature = "GameLua.Mod.Library.GamePlay.Feature.TeleportPawnFeature"},
+    {LifterControl = "GameLua.Mod.BaseMod.Gameplay.Feature.Player.CharacterLifterControlFeature"},
+    {FinalKillEffect = "GameLua.Mod.BaseMod.Gameplay.Feature.Player.PlayerCharacterFinalKillEffectFeature"},
+    {CampFeature = "GameLua.Mod.BaseMod.GamePlay.Feature.Camp.PlayerCharacterCampFeature"},
+    {BuildSkateFeature = "GameLua.Mod.BaseMod.Gameplay.Feature.PlayerCharacterBuildVehicleFeature"},
+    {CommonBornlandTransformFeature = "GameLua.Mod.BaseMod.GamePlay.Feature.HeroPropFeature.CommonBornlandTransformFeature"},
+    {ParachuteFormation = "GameLua.Mod.BaseMod.GamePlay.Feature.ParachuteFormationFeature"}
+}, "BRPlayerCharacterBase")
